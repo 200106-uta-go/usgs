@@ -1,38 +1,92 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
-	"html"
-	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 )
 
+type Product struct {
+	Name  string  `json:"name"`
+	Price float64 `json:"price"`
+}
+
+func NewProduct(n string, p float64) Product {
+	return Product{
+		Name:  n,
+		Price: p,
+	}
+}
+
+func (p Product) String() string {
+	return "This is a product"
+}
+
+type Products struct {
+	inventory []Product
+	lock      sync.Mutex
+}
+
+func (p *Products) add(product Product) {
+	p.lock.Lock()
+	p.inventory = append(p.inventory, product)
+	p.lock.Unlock()
+}
+
 func main() {
-	hostname := os.Getenv("USER")
-	http.HandleFunc("/hello", helloHandler)
-	http.HandleFunc("/path", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-Agent") == "" {
-			fmt.Fprint(w, "Get out")
-		} else {
-			fmt.Fprintf(w, "<h1>Hello, %q, %s</h1>", html.EscapeString(r.URL.Path), hostname)
+	var soap Product = NewProduct("soap", 4.20)
+
+	var shampoo Product = Product{
+		Name:  "shampoo",
+		Price: 420,
+	}
+
+	var products Products = Products{}
+
+	products.add(soap)
+	products.add(shampoo)
+
+	fmt.Println(soap)
+
+	http.HandleFunc("/products", func(w http.ResponseWriter, r *http.Request) {
+		output, err := json.Marshal(products.inventory)
+		if err != nil {
+			w.WriteHeader(http.StatusTeapot)
+			fmt.Fprintln(w, err)
+			return
 		}
-		helloresp, _ := http.Get("http://localhost:8080/hello?fname=frompath")
-		hellobody, _ := ioutil.ReadAll(helloresp.Body)
-		fmt.Println(string(hellobody))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, string(output))
 	})
-	http.HandleFunc("/json", jsonHandler)
-	go http.ListenAndServe(":8080", nil)
-	http.ListenAndServeTLS(":8081", "cert.pem", "key.pem", nil)
-}
 
-func jsonHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Add("Content-Type", "application/json")
-	fmt.Fprint(w, `{"name":"mehrab"}`)
-}
+	fmt.Println("Listening on ports 8080 (http) and 8081 (https)...")
 
-func helloHandler(w http.ResponseWriter, r *http.Request) {
-	clientname := r.FormValue("fname")
-	fmt.Println(r.FormValue("lname"))
-	fmt.Fprint(w, "Hello, ", clientname)
+	errorChan := make(chan error, 5)
+	go func() {
+		errorChan <- http.ListenAndServe(":8080", nil)
+	}()
+	go func() {
+		errorChan <- http.ListenAndServeTLS(":8081", "cert.pem", "key.pem", nil)
+	}()
+
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, syscall.SIGINT)
+
+	for {
+		select {
+		case err := <-errorChan:
+			if err != nil {
+				log.Fatalln(err)
+			}
+
+		case sig := <-signalChan:
+			fmt.Println("\nShutting down due to", sig)
+			os.Exit(0)
+		}
+	}
 }
